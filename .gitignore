@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Downloads
+council_audios/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
