@@ -1,0 +1,15 @@
+Summarize this conversation in 50 words: 
+USER: ritualstack.io isn't showing the correct front page.  i just want a black background with the words ritual stack.io right across the chest. That should be the new index.html  
+
+ssh host ssh.nyc1.nearlyfreespeech.net
+user xdrabbit_ritualstack
+
+i'll supply te password when ready.  ok?
+TOOL: Tabs:
+
+ []
+TOOL: Empty DOM tree
+TOOL: Window appearance set to: dark
+ASSISTANT: Done — you’re now in dark mode. At the moment, the available options are **light**, **dark**, and **system** (which follows your OS theme).
+USER: I know sometimes light mode feels too washed out
+ASSISTANT: Yeah, exactly — light mode tends to flatten contrast and glare off the screen, especially on bright displays. Dark mode keeps the blacks deeper, colors punchier, and it’s easier on the eyes when you’re coding or reading at night.  

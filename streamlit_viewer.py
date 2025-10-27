@@ -1,7 +1,43 @@
 import streamlit as st
 import json
 import requests
+import re
 from datetime import datetime
+
+stop_words = set("the and is in to a an for with on at by from as or but not this that it be have do will can".split())
+
+def syllable_count(word):
+    word = word.lower()
+    count = 0
+    vowels = "aeiouy"
+    if word[0] in vowels:
+        count += 1
+    for i in range(1, len(word)):
+        if word[i] in vowels and word[i-1] not in vowels:
+            count += 1
+    if word.endswith("e"):
+        count -= 1
+    if count == 0:
+        count += 1
+    return count
+
+def to_dotcode(text):
+    words = re.findall(r'\b\w+\b', text.lower())
+    filtered = [w for w in words if w not in stop_words]
+    encoded = []
+    for word in filtered:
+        if len(word) > 1:
+            consonants = ''.join(c for c in word if c not in 'aeiou')
+            if not consonants:
+                consonants = word[0]
+            else:
+                consonants = word[0] + consonants[1:3]  # first + next 2 cons
+        else:
+            consonants = word
+        syl = syllable_count(word)
+        dots = '.' * min(syl, 3)
+        encoded.append(consonants + dots)
+    return ' '.join(encoded)
 
 def ts_to_str(ts):
     """Convert epoch float to human-readable timestamp."""
@@ -89,8 +125,15 @@ if uploaded_file is not None:
                                 st.error(f"Connection failed: {e}")
                         available_models = get_ollama_models()
                         model = st.selectbox("Select Model", available_models, help="Choose an installed Ollama model.")
-                        input_mode = st.selectbox("Input Mode", ["Full Conversation", "Last 20 Messages", "Smart Summary (first 3 + last 10)"], help="Limit input to avoid long prompts.")
-                        prompt_template = st.text_area("Prompt", "Summarize this conversation:\n{full_text}", help="Use {full_text} as placeholder for the conversation content.")
+                        input_mode = st.selectbox("Input Mode", ["Full Conversation", "Last 20 Messages", "Smart Summary (first 3 + last 10)", "JSON Structure", "DotCode Compression"], help="Limit input to avoid long prompts.")
+                        default_prompt = {
+                            "Full Conversation": "Summarize this conversation:\n{full_text}",
+                            "Last 20 Messages": "Summarize this conversation:\n{full_text}",
+                            "Smart Summary (first 3 + last 10)": "Summarize this conversation:\n{full_text}",
+                            "JSON Structure": "Summarize this conversation based on the JSON structure:\n{full_text}",
+                            "DotCode Compression": "This is a compressed conversation using a code similar to shorthand or Morse. Rules: Remove common words (the, and, is), keep consonants + syllable dots (1-3 dots per syllable). Example: 'The strawberry is juicy' → 'str... jcy.'. Sentences end with '..'. Decode and summarize this DotCode conversation:\n{full_text}"
+                        }
+                        prompt_template = st.text_area("Prompt", default_prompt[input_mode], help="Use {full_text} as placeholder for the conversation content.")
                         
                         # Construct full_text and prompt for manual download
                         if input_mode == "Full Conversation":
@@ -103,6 +146,12 @@ if uploaded_file is not None:
                             last_10 = messages[-10:]
                             summary_messages = first_3 + last_10
                             full_text_manual = "\n".join([f"{role}: {text}" for ts, role, text in summary_messages])
+                        elif input_mode == "JSON Structure":
+                            json_data = {"messages": [{"timestamp": ts, "role": role, "content": text} for ts, role, text in messages]}
+                            full_text_manual = json.dumps(json_data, indent=2)
+                        elif input_mode == "DotCode Compression":
+                            dotcode_messages = [f"{role[0]}: {to_dotcode(text)} .." for ts, role, text in messages]
+                            full_text_manual = ' '.join(dotcode_messages)
                         prompt_manual = prompt_template.replace("{full_text}", full_text_manual)
                         
                         # Manual AI Run Section
@@ -129,6 +178,12 @@ if uploaded_file is not None:
                                 last_10 = messages[-10:]
                                 summary_messages = first_3 + last_10
                                 full_text = "\n".join([f"{role}: {text}" for ts, role, text in summary_messages])
+                            elif input_mode == "JSON Structure":
+                                json_data = {"messages": [{"timestamp": ts, "role": role, "content": text} for ts, role, text in messages]}
+                                full_text = json.dumps(json_data, indent=2)
+                            elif input_mode == "DotCode Compression":
+                                dotcode_messages = [f"{role[0]}: {to_dotcode(text)} .." for ts, role, text in messages]
+                                full_text = ' '.join(dotcode_messages)
                             prompt = prompt_template.replace("{full_text}", full_text)
                             st.write(f"Debug: Using model '{model}', input mode '{input_mode}'")
                             st.write(f"Debug: Prompt length: {len(prompt)} characters")
