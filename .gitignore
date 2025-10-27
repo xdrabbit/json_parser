@@ -12,3 +12,6 @@ council_audios/
 Thumbs.db
 
 conversations.json
+*.txt
+*.md
+
