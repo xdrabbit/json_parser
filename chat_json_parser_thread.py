@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 
 INPUT_FILE = "conversations.json"
-OUTPUT_FILE = "Sensory_Sounds_of_Eating.txt"
+OUTPUT_FILE = "Sensory_Sounds_of_Eating.md"
 TARGET_TITLE = "Sensory Sounds of Eating"
 
 def ts_to_str(ts):
