@@ -9,6 +9,7 @@ council_audios/
 
 # OS cruft
 .DS_Store
+._*
 Thumbs.db
 
 conversations.json
