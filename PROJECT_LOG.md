@@ -59,3 +59,16 @@ bash launch_streamlit.sh
 ### Notes
 - `PROJECT_LOG.md` exists so key progress and decisions are stored in the repo instead of only in the chat client.
 - If this becomes the standard handoff mechanism, append new dated entries rather than rewriting older ones.
+
+### Next Session Handoff
+1. Work from `blackbird`, not the older Mac Mini.
+2. Start by confirming the pulled commit and running the regression suite.
+3. Re-launch the Streamlit app only after tests pass.
+4. Next engineering target: enrich the evidence layer rather than broadening the UI.
+5. Priority order for the next phase:
+  - ingest full ChatGPT export folders, not just `conversations.json`
+  - resolve attachment/image files from export references
+  - add OCR/text extraction for evidence assets
+  - upgrade evidence manifest entries with OCR text, summaries, and relevance notes
+  - only after the data model is solid, consider an MCP server for hierarchical retrieval
+6. Keep `PROJECT_LOG.md` updated as the durable handoff record between machines/sessions.
