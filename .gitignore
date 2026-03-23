@@ -15,4 +15,5 @@ Thumbs.db
 conversations.json
 *.txt
 *.md
+!PROJECT_LOG.md
 
