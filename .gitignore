@@ -17,3 +17,6 @@ conversations.json
 *.md
 !PROJECT_LOG.md
 
+.env
+.env.local
+

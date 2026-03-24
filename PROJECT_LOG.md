@@ -5,6 +5,10 @@
 ### Summary
 - Confirmed this repo is a Streamlit-based viewer/parser for ChatGPT `conversations.json` exports.
 - Added conversation-level exports for raw JSON, flattened thread JSON, clean transcript Markdown, evidence manifest JSON, and legal project memory Markdown.
+- Added a higher-level thread summary Markdown export intended for lightweight ChatGPT Project seeding and downstream summarization.
+- Added an optional Ollama refinement path so the deterministic summary can be locally rewritten into a tighter executive brief or project-memory handoff.
+- Moved summary refinement controls near the summary itself, added side-by-side deterministic/refined summary comparison, and persisted refined summaries as a first-class downloadable export after generation.
+- Added a clear-refined-summary action for per-thread reset and a batch summary ZIP export that generates deterministic summary files plus a manifest for every titled conversation in one upload.
 - Added attachment/image reference extraction so evidence can be represented as a layered retrieval system instead of raw payload blobs.
 - Added a small regression suite and refactored the app so the core logic can be imported and tested without launching the Streamlit UI.
 - Switched the git remote to GitHub and pushed the current checkpoint.
@@ -20,8 +24,9 @@
 1. Raw conversation JSON
 2. Thread messages JSON
 3. Evidence manifest JSON
-4. Clean transcript Markdown
-5. Legal project memory Markdown
+4. Thread summary Markdown
+5. Clean transcript Markdown
+6. Legal project memory Markdown
 
 ### Rationale
 - Raw export objects are useful for archival fidelity but too noisy for direct project-memory use.
@@ -33,8 +38,17 @@
   - image/link evidence extraction
   - message extraction and sort order
   - evidence manifest generation
+  - thread summary generation
+  - summary refinement prompt generation
+  - refined summary label/session helper generation
+  - batch summary ZIP generation
   - project memory generation
   - thread export preservation of evidence references
+
+### Comm-X Alignment Note
+- Reviewed Comm-X PR `#1` as an additive Watson-oriented step rather than a merge target for this repo.
+- The useful convergence point is structural: `json_parser` can emit cleaner top-layer summaries and lower-layer evidence artifacts, while Comm-X can consume or mirror those outputs inside its Watson memory and retrieval stack.
+- Immediate priority remains cheap, high-level thread summaries for ChatGPT exports; optional local Ollama or low-cost API refinement can sit on top of deterministic summary generation.
 
 ### Recommended Next Steps
 1. Pull this repo on `blackbird` and continue development there.

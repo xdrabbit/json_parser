@@ -1,4 +1,7 @@
 import unittest
+import io
+import json
+import zipfile
 
 import streamlit_viewer as viewer
 
@@ -102,6 +105,76 @@ class StreamlitViewerTests(unittest.TestCase):
         self.assertEqual(exported["message_count"], 2)
         self.assertIn("evidence_refs", exported["messages"][0])
         self.assertEqual(exported["messages"][0]["evidence_refs"][0]["asset_id"], "file_DEF456")
+
+    def test_build_thread_summary_markdown_produces_top_layer_handoff(self):
+        conversation = build_sample_conversation()
+        messages = viewer.extract_messages_from_conversation(conversation)
+        manifest = viewer.build_evidence_manifest(conversation, messages)
+
+        summary_markdown = viewer.build_thread_summary_markdown(conversation, messages, manifest)
+
+        self.assertIn("# Thread Summary: closed - Legal strategy steps", summary_markdown)
+        self.assertIn("## Executive Summary", summary_markdown)
+        self.assertIn("## Retrieval Handoff", summary_markdown)
+        self.assertIn("Evidence references: 2", summary_markdown)
+        self.assertIn("Use this summary as the top layer", summary_markdown)
+
+    def test_build_summary_refinement_prompt_includes_mode_and_source_summary(self):
+        conversation = build_sample_conversation()
+        messages = viewer.extract_messages_from_conversation(conversation)
+        manifest = viewer.build_evidence_manifest(conversation, messages)
+        summary_markdown = viewer.build_thread_summary_markdown(conversation, messages, manifest)
+
+        prompt = viewer.build_summary_refinement_prompt(summary_markdown, "Executive Brief")
+
+        self.assertIn("Task:", prompt)
+        self.assertIn("compact executive brief", prompt)
+        self.assertIn("Source summary:", prompt)
+        self.assertIn("# Thread Summary: closed - Legal strategy steps", prompt)
+
+    def test_refinement_helpers_build_stable_labels(self):
+        key = viewer.refinement_session_key("closed_Legal_strategy_steps")
+        label = viewer.build_refinement_label("mistral-nemo:latest", "Executive Brief")
+
+        self.assertEqual(key, "refined_summary::closed_Legal_strategy_steps")
+        self.assertIn("mistral-nemo:latest", label)
+        self.assertIn("Executive Brief", label)
+
+    def test_build_batch_summary_zip_contains_summary_and_manifest(self):
+        conversation = build_sample_conversation()
+
+        archive_bytes = viewer.build_batch_summary_zip([conversation])
+
+        with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as archive:
+            names = archive.namelist()
+            self.assertIn("summaries/closed_-_Legal_strategy_steps.summary.md", names)
+            self.assertIn("summaries/manifest.json", names)
+
+            summary_text = archive.read("summaries/closed_-_Legal_strategy_steps.summary.md").decode("utf-8")
+            manifest = json.loads(archive.read("summaries/manifest.json").decode("utf-8"))
+
+        self.assertIn("# Thread Summary: closed - Legal strategy steps", summary_text)
+        self.assertEqual(manifest["conversation_count"], 1)
+        self.assertEqual(manifest["summaries"][0]["title"], "closed - Legal strategy steps")
+
+    def test_general_audience_filter_redacts_intimate_terms(self):
+        source = "A romantic and intimate exchange included explicit details."
+
+        filtered = viewer.apply_content_filter(source, "General Audience")
+
+        self.assertNotIn("romantic", filtered.lower())
+        self.assertNotIn("exchange included explicit details", filtered.lower())
+        self.assertIn("[redacted intimate detail]", filtered)
+
+    def test_build_batch_summary_zip_records_filter_mode(self):
+        conversation = build_sample_conversation()
+
+        archive_bytes = viewer.build_batch_summary_zip([conversation], filter_mode="General Audience")
+
+        with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as archive:
+            manifest = json.loads(archive.read("summaries/manifest.json").decode("utf-8"))
+
+        self.assertEqual(manifest["summaries"][0]["filter_mode"], "General Audience")
 
 
 if __name__ == "__main__":
