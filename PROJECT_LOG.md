@@ -9,6 +9,10 @@
 - Added an optional Ollama refinement path so the deterministic summary can be locally rewritten into a tighter executive brief or project-memory handoff.
 - Moved summary refinement controls near the summary itself, added side-by-side deterministic/refined summary comparison, and persisted refined summaries as a first-class downloadable export after generation.
 - Added a clear-refined-summary action for per-thread reset and a batch summary ZIP export that generates deterministic summary files plus a manifest for every titled conversation in one upload.
+- Added a first-pass legal-memory shaping layer: thread/message legal relevance scoring, legal relevance manifest export, and a legal memory markdown artifact built from filtered legal-relevant spans rather than whole-thread summarization.
+- Added a batch legal-memory ZIP export that packages legal relevance manifests for all threads and legal memory artifacts for threads not classified as purely non-legal.
+- Tightened the legal-memory artifact so uncertain material is excluded from the main legal sections and retained only in `Source Scope / Notes` as possible contextual relevance.
+- Added a structured legal timeline JSON side export for per-thread and batch legal processing, built only from legal-core and legal-adjacent spans.
 - Added attachment/image reference extraction so evidence can be represented as a layered retrieval system instead of raw payload blobs.
 - Added a small regression suite and refactored the app so the core logic can be imported and tested without launching the Streamlit UI.
 - Switched the git remote to GitHub and pushed the current checkpoint.
@@ -27,6 +31,9 @@
 4. Thread summary Markdown
 5. Clean transcript Markdown
 6. Legal project memory Markdown
+7. Legal relevance manifest JSON
+8. Legal memory artifact Markdown
+9. Legal timeline JSON
 
 ### Rationale
 - Raw export objects are useful for archival fidelity but too noisy for direct project-memory use.
@@ -42,6 +49,11 @@
   - summary refinement prompt generation
   - refined summary label/session helper generation
   - batch summary ZIP generation
+  - legal relevance classification
+  - legal memory artifact generation
+  - batch legal memory ZIP generation
+  - uncertain-span demotion into source-scope notes
+  - legal timeline JSON generation
   - project memory generation
   - thread export preservation of evidence references
 

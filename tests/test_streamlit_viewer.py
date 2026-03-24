@@ -44,6 +44,95 @@ def build_sample_conversation():
     }
 
 
+def build_mixed_conversation():
+    return {
+        "title": "mixed notes",
+        "create_time": 1700001000,
+        "update_time": 1700001400,
+        "mapping": {
+            "root": {"message": None},
+            "m1": {
+                "message": {
+                    "create_time": 1700001100,
+                    "author": {"role": "user"},
+                    "content": {"parts": ["I need help debugging a Streamlit layout issue in my app."]},
+                }
+            },
+            "m2": {
+                "message": {
+                    "create_time": 1700001200,
+                    "author": {"role": "user"},
+                    "content": {"parts": ["The court order required a response by January 5, 2025 and I have the screenshot proof."]},
+                }
+            },
+            "m3": {
+                "message": {
+                    "create_time": 1700001300,
+                    "author": {"role": "assistant"},
+                    "content": {"parts": ["Focus the filing on the missed compliance deadline and attach the evidence."]},
+                }
+            },
+        },
+    }
+
+
+def build_non_legal_conversation():
+    return {
+        "title": "software notes",
+        "create_time": 1700002000,
+        "update_time": 1700002300,
+        "mapping": {
+            "root": {"message": None},
+            "m1": {
+                "message": {
+                    "create_time": 1700002100,
+                    "author": {"role": "user"},
+                    "content": {"parts": ["I need help debugging Python code in a Streamlit app and reviewing a pull request."]},
+                }
+            },
+            "m2": {
+                "message": {
+                    "create_time": 1700002200,
+                    "author": {"role": "assistant"},
+                    "content": {"parts": ["Try refactoring the JSON parser and checking git diff output."]},
+                }
+            },
+        },
+    }
+
+
+def build_uncertain_conversation():
+    return {
+        "title": "case context spillover",
+        "create_time": 1700003000,
+        "update_time": 1700003400,
+        "mapping": {
+            "root": {"message": None},
+            "m1": {
+                "message": {
+                    "create_time": 1700003100,
+                    "author": {"role": "user"},
+                    "content": {"parts": ["The court order required the response by January 5, 2025."]},
+                }
+            },
+            "m2": {
+                "message": {
+                    "create_time": 1700003200,
+                    "author": {"role": "user"},
+                    "content": {"parts": ["I am overwhelmed and trying to plan around everything next week."]},
+                }
+            },
+            "m3": {
+                "message": {
+                    "create_time": 1700003300,
+                    "author": {"role": "assistant"},
+                    "content": {"parts": ["Attach the screenshot evidence and focus on the missed compliance deadline."]},
+                }
+            },
+        },
+    }
+
+
 class StreamlitViewerTests(unittest.TestCase):
     def test_extract_content_text_rewrites_image_links_and_attachments(self):
         content = {
@@ -175,6 +264,82 @@ class StreamlitViewerTests(unittest.TestCase):
             manifest = json.loads(archive.read("summaries/manifest.json").decode("utf-8"))
 
         self.assertEqual(manifest["summaries"][0]["filter_mode"], "General Audience")
+
+    def test_build_legal_relevance_manifest_detects_mixed_thread(self):
+        conversation = build_mixed_conversation()
+        messages = viewer.extract_messages_from_conversation(conversation)
+
+        manifest = viewer.build_legal_relevance_manifest(conversation, messages)
+
+        self.assertEqual(manifest["thread_classification"], "uncertain")
+        self.assertTrue(manifest["mixed_domain"])
+        self.assertGreaterEqual(manifest["included_message_count"], 2)
+
+    def test_build_legal_memory_markdown_has_traceable_sections(self):
+        conversation = build_mixed_conversation()
+        messages = viewer.extract_messages_from_conversation(conversation)
+        evidence_manifest = viewer.build_evidence_manifest(conversation, messages)
+        relevance_manifest = viewer.build_legal_relevance_manifest(conversation, messages)
+
+        legal_memory = viewer.build_legal_memory_markdown(conversation, messages, evidence_manifest, relevance_manifest)
+
+        self.assertIn("# Legal Memory Artifact: mixed notes", legal_memory)
+        self.assertIn("## Matter Summary", legal_memory)
+        self.assertIn("## Governing Orders / Duties", legal_memory)
+        self.assertIn("## Source Scope / Notes", legal_memory)
+        self.assertIn("[msg 2]", legal_memory)
+
+    def test_build_legal_timeline_json_includes_traceable_events(self):
+        conversation = build_mixed_conversation()
+        messages = viewer.extract_messages_from_conversation(conversation)
+        evidence_manifest = viewer.build_evidence_manifest(conversation, messages)
+        relevance_manifest = viewer.build_legal_relevance_manifest(conversation, messages)
+
+        timeline = viewer.build_legal_timeline_json(conversation, messages, evidence_manifest, relevance_manifest)
+
+        self.assertEqual(timeline["conversation_title"], "mixed notes")
+        self.assertGreaterEqual(timeline["event_count"], 2)
+        self.assertEqual(timeline["events"][0]["message_index"], 2)
+        self.assertIn(timeline["events"][0]["event_type"], {"dated_event", "obligation_or_dispute"})
+
+    def test_build_batch_legal_memory_zip_exports_artifacts_for_legal_threads(self):
+        conversation = build_mixed_conversation()
+
+        archive_bytes = viewer.build_batch_legal_memory_zip([conversation])
+
+        with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as archive:
+            names = archive.namelist()
+            manifest = json.loads(archive.read("legal_memory/manifest.json").decode("utf-8"))
+
+        self.assertIn("legal_relevance/mixed_notes.legal_relevance.json", names)
+        self.assertIn("legal_timeline/mixed_notes.timeline.json", names)
+        self.assertIn("legal_memory/mixed_notes.legal_memory.md", names)
+        self.assertEqual(manifest["threads"][0]["export_status"], "exported")
+
+    def test_build_batch_legal_memory_zip_skips_non_legal_memory_export(self):
+        conversation = build_non_legal_conversation()
+
+        archive_bytes = viewer.build_batch_legal_memory_zip([conversation])
+
+        with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as archive:
+            names = archive.namelist()
+            manifest = json.loads(archive.read("legal_memory/manifest.json").decode("utf-8"))
+
+        self.assertIn("legal_relevance/software_notes.legal_relevance.json", names)
+        self.assertNotIn("legal_memory/software_notes.legal_memory.md", names)
+        self.assertEqual(manifest["threads"][0]["export_status"], "skipped_non_legal")
+
+    def test_uncertain_material_is_demoted_to_source_scope_notes(self):
+        conversation = build_uncertain_conversation()
+        messages = viewer.extract_messages_from_conversation(conversation)
+        evidence_manifest = viewer.build_evidence_manifest(conversation, messages)
+        relevance_manifest = viewer.build_legal_relevance_manifest(conversation, messages)
+
+        legal_memory = viewer.build_legal_memory_markdown(conversation, messages, evidence_manifest, relevance_manifest)
+
+        self.assertIn("## Source Scope / Notes", legal_memory)
+        self.assertIn("Possible contextual relevance only", legal_memory)
+        self.assertIn("overwhelmed and trying to plan", legal_memory)
 
 
 if __name__ == "__main__":

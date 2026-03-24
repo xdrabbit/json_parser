@@ -27,6 +27,26 @@ INTIMATE_CONTENT_PATTERNS = [
         r"\bbodily\b",
     ]
 ]
+DATE_REFERENCE_RE = re.compile(
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{1,2}/\d{1,2}/\d{2,4}|20\d{2})\b",
+    re.IGNORECASE,
+)
+LEGAL_HIGH_WEIGHT_PATTERNS = {
+    "court_order": re.compile(r"\b(court|order|decree|mandate|hearing|motion|filing|compliance|noncompliance)\b", re.IGNORECASE),
+    "property_dispute": re.compile(r"\b(property|sale|listing|showing|realtor|lockbox|mortgage|insurance|contractor)\b", re.IGNORECASE),
+    "evidence": re.compile(r"\b(evidence|photo|screenshot|attachment|proof|exhibit|document)\b", re.IGNORECASE),
+    "dispute_actor": re.compile(r"\b(attorney|counsel|judge|lender|insurer|opposing|party|broker|commissioner)\b", re.IGNORECASE),
+}
+LEGAL_MEDIUM_WEIGHT_PATTERNS = {
+    "strategy": re.compile(r"\b(strategy|argument|position|remedy|settlement|risk|timeline|chronology|deadline|obligation|duty)\b", re.IGNORECASE),
+    "context": re.compile(r"\b(schedule|money|payment|expense|damage|repair|access|communication|response)\b", re.IGNORECASE),
+    "emotion_tied_to_case": re.compile(r"\b(stress|pressure|afraid|angry|panic|overwhelmed)\b", re.IGNORECASE),
+}
+LEGAL_NEGATIVE_PATTERNS = {
+    "software": re.compile(r"\b(code|coding|python|streamlit|debug|repo|commit|pull request|ui|json parser)\b", re.IGNORECASE),
+    "creative": re.compile(r"\b(song|music|poem|story|novel|creative writing|lyrics)\b", re.IGNORECASE),
+    "general_life": re.compile(r"\b(recipe|shopping|vacation|restaurant|birthday|workout|movie|game|hobby)\b", re.IGNORECASE),
+}
 
 def syllable_count(word):
     word = word.lower()
@@ -279,6 +299,321 @@ def apply_content_filter(text, filter_mode):
         return filter_for_general_audience(text)
     return text
 
+def score_legal_relevance(text, evidence_refs=None):
+    """Score message text for legal relevance using weighted heuristic features."""
+    evidence_refs = evidence_refs or []
+    matched_high = sorted(label for label, pattern in LEGAL_HIGH_WEIGHT_PATTERNS.items() if pattern.search(text))
+    matched_medium = sorted(label for label, pattern in LEGAL_MEDIUM_WEIGHT_PATTERNS.items() if pattern.search(text))
+    matched_negative = sorted(label for label, pattern in LEGAL_NEGATIVE_PATTERNS.items() if pattern.search(text))
+    has_date_reference = bool(DATE_REFERENCE_RE.search(text))
+
+    score = len(matched_high) * 4 + len(matched_medium) * 2 - len(matched_negative) * 4
+    if has_date_reference and (matched_high or matched_medium):
+        score += 2
+    if evidence_refs:
+        score += 2
+
+    if matched_high and matched_negative and score < 8:
+        classification = "uncertain"
+    elif score >= 8 or (len(matched_high) >= 2 and score >= 6):
+        classification = "legal_core"
+    elif score >= 3 or matched_high or len(matched_medium) >= 2:
+        classification = "legal_adjacent"
+    elif score <= -4 and not matched_high and not matched_medium:
+        classification = "non_legal"
+    else:
+        classification = "uncertain"
+
+    return {
+        "score": score,
+        "classification": classification,
+        "matched_high": matched_high,
+        "matched_medium": matched_medium,
+        "matched_negative": matched_negative,
+        "has_date_reference": has_date_reference,
+        "has_evidence_refs": bool(evidence_refs),
+    }
+
+def summarize_message_ranges(indices):
+    """Compactly describe contiguous message index ranges."""
+    if not indices:
+        return []
+
+    ranges = []
+    start = prev = indices[0]
+    for value in indices[1:]:
+        if value == prev + 1:
+            prev = value
+            continue
+        ranges.append(f"{start}-{prev}" if start != prev else str(start))
+        start = prev = value
+    ranges.append(f"{start}-{prev}" if start != prev else str(start))
+    return ranges
+
+def build_legal_relevance_manifest(convo, messages):
+    """Classify a thread and its messages for legal-memory shaping."""
+    classified_messages = []
+    thread_score = 0
+    counts = {"legal_core": 0, "legal_adjacent": 0, "non_legal": 0, "uncertain": 0}
+
+    for index, message in enumerate(messages, 1):
+        relevance = score_legal_relevance(message["content"], message["evidence_refs"])
+        thread_score += relevance["score"]
+        counts[relevance["classification"]] += 1
+        classified_messages.append({
+            "message_index": index,
+            "timestamp": message["timestamp"],
+            "role": message["role"].lower(),
+            "classification": relevance["classification"],
+            "score": relevance["score"],
+            "matched_high": relevance["matched_high"],
+            "matched_medium": relevance["matched_medium"],
+            "matched_negative": relevance["matched_negative"],
+            "has_date_reference": relevance["has_date_reference"],
+            "has_evidence_refs": relevance["has_evidence_refs"],
+            "excerpt": summarize_text(message["content"], 220),
+        })
+
+    included_indices = [
+        item["message_index"]
+        for item in classified_messages
+        if item["classification"] in {"legal_core", "legal_adjacent"}
+    ]
+    range_summary = summarize_message_ranges(included_indices)
+    mixed_domain = bool((counts["legal_core"] or counts["legal_adjacent"]) and counts["non_legal"])
+
+    if counts["legal_core"] >= 2 or thread_score >= 18:
+        thread_classification = "legal_core" if not mixed_domain else "uncertain"
+    elif counts["legal_core"] or counts["legal_adjacent"]:
+        thread_classification = "legal_adjacent" if not mixed_domain else "uncertain"
+    elif counts["non_legal"] and not counts["uncertain"]:
+        thread_classification = "non_legal"
+    else:
+        thread_classification = "uncertain"
+
+    return {
+        "conversation_title": convo.get("title", "Untitled"),
+        "thread_classification": thread_classification,
+        "thread_score": thread_score,
+        "mixed_domain": mixed_domain,
+        "message_counts": counts,
+        "included_message_ranges": range_summary,
+        "included_message_count": len(included_indices),
+        "messages": classified_messages,
+    }
+
+def collect_legal_sentences(messages, allowed_indices, predicate, limit=5):
+    """Extract traceable sentences from selected legal-relevant messages."""
+    collected = []
+    seen = set()
+    allowed = set(allowed_indices)
+
+    for index, message in enumerate(messages, 1):
+        if index not in allowed:
+            continue
+        for sentence in split_into_sentences(message["content"]):
+            if len(sentence) < 20:
+                continue
+            if not predicate(sentence):
+                continue
+            normalized = sentence.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            collected.append(f"- [msg {index}] {summarize_text(sentence, 220)}")
+            if len(collected) >= limit:
+                return collected
+    return collected
+
+def build_legal_memory_markdown(convo, messages, evidence_manifest, relevance_manifest):
+    """Create a legal-specific memory artifact from mixed-domain threads."""
+    included_indices = [
+        item["message_index"]
+        for item in relevance_manifest["messages"]
+        if item["classification"] in {"legal_core", "legal_adjacent"}
+    ]
+    uncertain_indices = [
+        item["message_index"]
+        for item in relevance_manifest["messages"]
+        if item["classification"] == "uncertain"
+    ]
+    included_messages = [messages[index - 1] for index in included_indices]
+    uncertain_messages = [messages[index - 1] for index in uncertain_indices]
+    evidence_by_message = {}
+    for exhibit in evidence_manifest["exhibits"]:
+        evidence_by_message.setdefault(exhibit["message_index"], []).append(exhibit)
+
+    if included_messages:
+        matter_summary = [
+            f"- Thread classification: {relevance_manifest['thread_classification']} (score={relevance_manifest['thread_score']}).",
+            f"- Included legal-relevant message ranges: {', '.join(relevance_manifest['included_message_ranges']) or 'none identified' }.",
+            f"- Matter focus: {summarize_text(included_messages[0]['content'], 220)}",
+        ]
+    else:
+        matter_summary = [
+            "- No legal-core or legal-adjacent message spans were identified in this thread.",
+            f"- Thread classification: {relevance_manifest['thread_classification']} (score={relevance_manifest['thread_score']}).",
+        ]
+
+    durable_facts = collect_legal_sentences(
+        messages,
+        included_indices,
+        lambda sentence: not sentence.endswith("?") and (DATE_REFERENCE_RE.search(sentence) or any(pattern.search(sentence) for pattern in LEGAL_HIGH_WEIGHT_PATTERNS.values())),
+        limit=6,
+    ) or ["- No durable facts were extracted with confidence from the included legal spans."]
+
+    governing_orders = collect_legal_sentences(
+        messages,
+        included_indices,
+        lambda sentence: re.search(r"\b(order|ordered|must|shall|required|deadline|duty|hearing|motion|decree|compliance)\b", sentence, re.IGNORECASE) is not None,
+        limit=5,
+    ) or ["- No governing orders or duties were detected in the included legal spans."]
+
+    evidence_highlights = []
+    for message_index in included_indices:
+        for exhibit in evidence_by_message.get(message_index, []):
+            evidence_highlights.append(
+                f"- {exhibit['exhibit_id']} [msg {message_index}] {exhibit['kind']} | {exhibit['label']} | {exhibit['retrieval_note']}"
+            )
+    if not evidence_highlights:
+        evidence_highlights = ["- No evidence references were attached to the included legal spans."]
+
+    timeline_anchors = [
+        f"- {ts_to_str(message['timestamp'])} [msg {index}] {message['role']}: {summarize_text(message['content'], 160)}"
+        for index, message in enumerate(messages, 1)
+        if index in set(included_indices)
+    ][:8] or ["- No legal timeline anchors were selected."]
+
+    contradictions = collect_legal_sentences(
+        messages,
+        included_indices,
+        lambda sentence: re.search(r"\b(contradict|however|but|inconsistent|changed|excuse|failed|refused|did not|didn't|not true)\b", sentence, re.IGNORECASE) is not None,
+        limit=5,
+    ) or ["- No contradiction or pattern evidence was extracted with confidence."]
+
+    current_posture = [
+        f"- [msg {item['message_index']}] {messages[item['message_index'] - 1]['role'].title()}: {item['excerpt']}"
+        for item in relevance_manifest['messages']
+        if item['message_index'] in set(included_indices)
+    ][-3:] or ["- Current posture could not be derived because no legal-relevant spans were included."]
+
+    open_questions = collect_legal_sentences(
+        messages,
+        included_indices,
+        lambda sentence: sentence.endswith("?") or "?" in sentence,
+        limit=5,
+    ) or ["- No open legal questions were detected in the included spans."]
+
+    _key_points, _decisions, _questions, next_actions_raw = extract_structured_points(included_messages)
+    next_actions = [f"- {item}" for item in next_actions_raw[:5]] or ["- No concrete next actions were extracted from the included legal spans."]
+
+    uncertain_notes = [
+        f"- [msg {item['message_index']}] Possible contextual relevance only: {item['excerpt']}"
+        for item in relevance_manifest['messages']
+        if item['message_index'] in set(uncertain_indices)
+    ][:5]
+    if not uncertain_notes and uncertain_messages:
+        uncertain_notes = [
+            f"- [msg {index}] Possible contextual relevance only: {summarize_text(message['content'], 220)}"
+            for index, message in enumerate(messages, 1)
+            if index in set(uncertain_indices)
+        ][:5]
+
+    source_scope_notes = [
+        f"- Source thread classification: {relevance_manifest['thread_classification']}.",
+        f"- Mixed-domain thread: {'yes' if relevance_manifest['mixed_domain'] else 'no'}.",
+        f"- Included message ranges: {', '.join(relevance_manifest['included_message_ranges']) or 'none'}.",
+        f"- Omitted counts: non_legal={relevance_manifest['message_counts']['non_legal']}, uncertain={relevance_manifest['message_counts']['uncertain']}",
+        "- Important facts should be traced back through the cited message indices and evidence IDs before downstream reuse.",
+    ]
+    if uncertain_notes:
+        source_scope_notes.extend([
+            "- Uncertain spans were excluded from the main legal sections and retained only as possible contextual relevance:",
+            *uncertain_notes,
+        ])
+
+    lines = [
+        f"# Legal Memory Artifact: {convo.get('title', 'Untitled')}",
+        "",
+        "## Matter Summary",
+        *matter_summary,
+        "",
+        "## Durable Facts",
+        *durable_facts,
+        "",
+        "## Governing Orders / Duties",
+        *governing_orders,
+        "",
+        "## Evidence Highlights",
+        *evidence_highlights,
+        "",
+        "## Timeline Anchors",
+        *timeline_anchors,
+        "",
+        "## Contradictions / Pattern Evidence",
+        *contradictions,
+        "",
+        "## Current Posture",
+        *current_posture,
+        "",
+        "## Open Questions",
+        *open_questions,
+        "",
+        "## Next Actions",
+        *next_actions,
+        "",
+        "## Source Scope / Notes",
+        *source_scope_notes,
+    ]
+    return "\n".join(lines).strip() + "\n"
+
+def build_legal_timeline_json(convo, messages, evidence_manifest, relevance_manifest):
+    """Create a structured chronology export from legal-core and legal-adjacent spans."""
+    included_indices = {
+        item["message_index"]
+        for item in relevance_manifest["messages"]
+        if item["classification"] in {"legal_core", "legal_adjacent"}
+    }
+    evidence_by_message = {}
+    for exhibit in evidence_manifest["exhibits"]:
+        evidence_by_message.setdefault(exhibit["message_index"], []).append(exhibit)
+
+    events = []
+    for index, message in enumerate(messages, 1):
+        if index not in included_indices:
+            continue
+
+        message_relevance = next(
+            (item for item in relevance_manifest["messages"] if item["message_index"] == index),
+            None,
+        )
+        event_type = "evidence_reference" if message["evidence_refs"] else "statement"
+        if message_relevance and message_relevance["has_date_reference"]:
+            event_type = "dated_event"
+        if message_relevance and any(label in {"court_order", "property_dispute"} for label in message_relevance["matched_high"]):
+            event_type = "obligation_or_dispute"
+
+        events.append({
+            "message_index": index,
+            "timestamp": message["timestamp"],
+            "timestamp_text": ts_to_str(message["timestamp"]),
+            "role": message["role"].lower(),
+            "classification": message_relevance["classification"] if message_relevance else "unknown",
+            "event_type": event_type,
+            "summary": summarize_text(message["content"], 220),
+            "matched_high": message_relevance["matched_high"] if message_relevance else [],
+            "matched_medium": message_relevance["matched_medium"] if message_relevance else [],
+            "evidence_ids": [exhibit["exhibit_id"] for exhibit in evidence_by_message.get(index, [])],
+        })
+
+    return {
+        "conversation_title": convo.get("title", "Untitled"),
+        "thread_classification": relevance_manifest["thread_classification"],
+        "included_message_ranges": relevance_manifest["included_message_ranges"],
+        "event_count": len(events),
+        "events": events,
+    }
+
 def build_batch_summary_zip(conversations, filter_mode="Original"):
     """Create a ZIP archive with deterministic thread summaries for all titled conversations."""
     buffer = io.BytesIO()
@@ -312,6 +647,63 @@ def build_batch_summary_zip(conversations, filter_mode="Original"):
         archive.writestr(
             "summaries/manifest.json",
             json.dumps({"conversation_count": len(manifest), "summaries": manifest}, indent=2, ensure_ascii=False),
+        )
+
+    return buffer.getvalue()
+
+def build_batch_legal_memory_zip(conversations):
+    """Create a ZIP archive with legal-memory artifacts and relevance manifests for all titled conversations."""
+    buffer = io.BytesIO()
+    manifest = []
+
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for convo in conversations:
+            title = convo.get("title")
+            if not title:
+                continue
+
+            file_stem = sanitize_filename(title)
+            messages = extract_messages_from_conversation(convo)
+            evidence_manifest = build_evidence_manifest(convo, messages)
+            legal_relevance_manifest = build_legal_relevance_manifest(convo, messages)
+            legal_memory_markdown = build_legal_memory_markdown(convo, messages, evidence_manifest, legal_relevance_manifest)
+            legal_timeline_json = build_legal_timeline_json(convo, messages, evidence_manifest, legal_relevance_manifest)
+
+            archive.writestr(
+                f"legal_relevance/{file_stem}.legal_relevance.json",
+                json.dumps(legal_relevance_manifest, indent=2, ensure_ascii=False),
+            )
+            archive.writestr(
+                f"legal_timeline/{file_stem}.timeline.json",
+                json.dumps(legal_timeline_json, indent=2, ensure_ascii=False),
+            )
+
+            thread_classification = legal_relevance_manifest["thread_classification"]
+            export_status = "skipped_non_legal"
+            exported_files = [
+                f"legal_relevance/{file_stem}.legal_relevance.json",
+                f"legal_timeline/{file_stem}.timeline.json",
+            ]
+
+            if thread_classification in {"legal_core", "legal_adjacent", "uncertain"}:
+                archive.writestr(f"legal_memory/{file_stem}.legal_memory.md", legal_memory_markdown)
+                exported_files.append(f"legal_memory/{file_stem}.legal_memory.md")
+                export_status = "exported"
+
+            manifest.append({
+                "title": title,
+                "thread_classification": thread_classification,
+                "thread_score": legal_relevance_manifest["thread_score"],
+                "mixed_domain": legal_relevance_manifest["mixed_domain"],
+                "included_message_ranges": legal_relevance_manifest["included_message_ranges"],
+                "included_message_count": legal_relevance_manifest["included_message_count"],
+                "export_status": export_status,
+                "files": exported_files,
+            })
+
+        archive.writestr(
+            "legal_memory/manifest.json",
+            json.dumps({"conversation_count": len(manifest), "threads": manifest}, indent=2, ensure_ascii=False),
         )
 
     return buffer.getvalue()
@@ -710,17 +1102,28 @@ def render_app():
                     help="Apply this only to derived summary outputs. Raw JSON, transcript fidelity, and evidence references remain unchanged.",
                 )
                 batch_summary_zip = build_batch_summary_zip(data, filter_mode=content_filter_mode)
+                batch_legal_memory_zip = build_batch_legal_memory_zip(data)
 
                 st.subheader("Batch Summary Export")
                 st.write("Generate deterministic summary files for every titled conversation in this upload.")
                 st.caption(f"Batch summaries will use content filter: {content_filter_mode}")
-                st.download_button(
-                    label="Download all thread summaries ZIP",
-                    data=batch_summary_zip,
-                    file_name="chatgpt_thread_summaries.zip",
-                    mime="application/zip",
-                    key="download_all_summaries_zip"
-                )
+                batch_col1, batch_col2 = st.columns(2)
+                with batch_col1:
+                    st.download_button(
+                        label="Download all thread summaries ZIP",
+                        data=batch_summary_zip,
+                        file_name="chatgpt_thread_summaries.zip",
+                        mime="application/zip",
+                        key="download_all_summaries_zip"
+                    )
+                with batch_col2:
+                    st.download_button(
+                        label="Download all legal memory ZIP",
+                        data=batch_legal_memory_zip,
+                        file_name="chatgpt_legal_memory.zip",
+                        mime="application/zip",
+                        key="download_all_legal_memory_zip"
+                    )
 
                 selected_title = st.selectbox("Select a conversation", titles)
                 if selected_title:
@@ -739,12 +1142,17 @@ def render_app():
                             thread_export_json = json.dumps(build_thread_export(convo, messages), indent=2, ensure_ascii=False)
                             evidence_manifest = build_evidence_manifest(convo, messages)
                             evidence_manifest_json = json.dumps(evidence_manifest, indent=2, ensure_ascii=False)
+                            legal_relevance_manifest = build_legal_relevance_manifest(convo, messages)
+                            legal_relevance_manifest_json = json.dumps(legal_relevance_manifest, indent=2, ensure_ascii=False)
+                            legal_timeline = build_legal_timeline_json(convo, messages, evidence_manifest, legal_relevance_manifest)
+                            legal_timeline_json = json.dumps(legal_timeline, indent=2, ensure_ascii=False)
                             transcript_markdown = build_markdown_transcript(convo, messages)
                             thread_summary_markdown = apply_content_filter(
                                 build_thread_summary_markdown(convo, messages, evidence_manifest),
                                 content_filter_mode,
                             )
                             project_memory_markdown = build_project_memory_markdown(convo, messages, evidence_manifest)
+                            legal_memory_markdown = build_legal_memory_markdown(convo, messages, evidence_manifest, legal_relevance_manifest)
                             refined_summary_key = refinement_session_key(file_stem)
                             refined_summary_payload = st.session_state.get(refined_summary_key)
 
@@ -813,11 +1221,58 @@ def render_app():
                                     )
                                 with export_col8:
                                     st.caption(refined_summary_payload["label"])
+                            export_col9, export_col10 = st.columns(2)
+                            with export_col9:
+                                st.download_button(
+                                    label="Download legal relevance manifest JSON",
+                                    data=legal_relevance_manifest_json,
+                                    file_name=f"{file_stem}.legal_relevance.json",
+                                    mime="application/json",
+                                    key=f"download_legal_relevance_{file_stem}"
+                                )
+                            with export_col10:
+                                st.download_button(
+                                    label="Download legal memory artifact MD",
+                                    data=legal_memory_markdown,
+                                    file_name=f"{file_stem}.legal_memory.md",
+                                    mime="text/markdown",
+                                    key=f"download_legal_memory_{file_stem}"
+                                )
+                            export_col11, export_col12 = st.columns(2)
+                            with export_col11:
+                                st.download_button(
+                                    label="Download legal timeline JSON",
+                                    data=legal_timeline_json,
+                                    file_name=f"{file_stem}.timeline.json",
+                                    mime="application/json",
+                                    key=f"download_legal_timeline_{file_stem}"
+                                )
+                            with export_col12:
+                                st.caption(f"Timeline events: {legal_timeline['event_count']}")
                             summary_col1, summary_col2 = st.columns(2)
                             with summary_col1:
                                 st.caption(f"Extracted exhibits: {evidence_manifest['evidence_count']}")
                             with summary_col2:
                                 st.caption(f"Use the thread summary as the top-layer handoff to downstream LLMs. Filter: {content_filter_mode}")
+
+                            legal_col1, legal_col2 = st.columns(2)
+                            with legal_col1:
+                                st.caption(
+                                    f"Legal classification: {legal_relevance_manifest['thread_classification']} (score={legal_relevance_manifest['thread_score']})"
+                                )
+                            with legal_col2:
+                                st.caption(
+                                    f"Legal-relevant message ranges: {', '.join(legal_relevance_manifest['included_message_ranges']) or 'none'}"
+                                )
+
+                            with st.expander("Preview legal memory artifact", expanded=False):
+                                st.markdown(legal_memory_markdown)
+
+                            with st.expander("Preview legal relevance manifest", expanded=False):
+                                st.code(legal_relevance_manifest_json, language="json")
+
+                            with st.expander("Preview legal timeline JSON", expanded=False):
+                                st.code(legal_timeline_json, language="json")
 
                             st.subheader("Summary Comparison")
                             comparison_col1, comparison_col2 = st.columns(2)
