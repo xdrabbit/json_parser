@@ -14,6 +14,7 @@
 - Tightened the legal-memory artifact so uncertain material is excluded from the main legal sections and retained only in `Source Scope / Notes` as possible contextual relevance.
 - Added a structured legal timeline JSON side export for per-thread and batch legal processing, built only from legal-core and legal-adjacent spans.
 - Added a contradiction index JSON side export for per-thread and batch legal processing, capturing traceable contradiction, excuse-shift, and noncompliance signals from legal-relevant spans.
+- Added a claims/issues JSON side export for per-thread and batch legal processing, capturing traceable claims, issues, remedy signals, and open-question markers from legal-relevant spans.
 - Added attachment/image reference extraction so evidence can be represented as a layered retrieval system instead of raw payload blobs.
 - Added a small regression suite and refactored the app so the core logic can be imported and tested without launching the Streamlit UI.
 - Switched the git remote to GitHub and pushed the current checkpoint.
@@ -36,6 +37,7 @@
 8. Legal memory artifact Markdown
 9. Legal timeline JSON
 10. Contradiction index JSON
+11. Claims and issues JSON
 
 ### Rationale
 - Raw export objects are useful for archival fidelity but too noisy for direct project-memory use.
@@ -57,6 +59,7 @@
   - uncertain-span demotion into source-scope notes
   - legal timeline JSON generation
   - contradiction index JSON generation
+  - claims/issues JSON generation
   - project memory generation
   - thread export preservation of evidence references
 

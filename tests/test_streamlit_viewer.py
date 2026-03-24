@@ -165,6 +165,38 @@ def build_contradiction_conversation():
     }
 
 
+def build_claims_issues_conversation():
+    return {
+        "title": "claims thread",
+        "create_time": 1700005000,
+        "update_time": 1700005400,
+        "mapping": {
+            "root": {"message": None},
+            "m1": {
+                "message": {
+                    "create_time": 1700005100,
+                    "author": {"role": "user"},
+                    "content": {"parts": ["My claim is that the missed deadline violated the court order."]},
+                }
+            },
+            "m2": {
+                "message": {
+                    "create_time": 1700005200,
+                    "author": {"role": "assistant"},
+                    "content": {"parts": ["The central issue is noncompliance, and the remedy may be a motion to enforce."]},
+                }
+            },
+            "m3": {
+                "message": {
+                    "create_time": 1700005300,
+                    "author": {"role": "assistant"},
+                    "content": {"parts": ["Whether the judge will grant relief remains an open question."]},
+                }
+            },
+        },
+    }
+
+
 class StreamlitViewerTests(unittest.TestCase):
     def test_extract_content_text_rewrites_image_links_and_attachments(self):
         content = {
@@ -345,6 +377,20 @@ class StreamlitViewerTests(unittest.TestCase):
         self.assertGreaterEqual(contradictions["contradiction_count"], 1)
         self.assertIn("noncompliance", contradictions["items"][0]["signals"])
 
+    def test_build_claims_issues_json_detects_categories(self):
+        conversation = build_claims_issues_conversation()
+        messages = viewer.extract_messages_from_conversation(conversation)
+        evidence_manifest = viewer.build_evidence_manifest(conversation, messages)
+        relevance_manifest = viewer.build_legal_relevance_manifest(conversation, messages)
+
+        claims_issues = viewer.build_claims_issues_json(conversation, messages, evidence_manifest, relevance_manifest)
+
+        self.assertGreaterEqual(claims_issues["entry_count"], 3)
+        all_categories = {category for entry in claims_issues["entries"] for category in entry["categories"]}
+        self.assertIn("claim", all_categories)
+        self.assertIn("issue", all_categories)
+        self.assertIn("remedy", all_categories)
+
     def test_build_batch_legal_memory_zip_exports_artifacts_for_legal_threads(self):
         conversation = build_mixed_conversation()
 
@@ -357,6 +403,7 @@ class StreamlitViewerTests(unittest.TestCase):
         self.assertIn("legal_relevance/mixed_notes.legal_relevance.json", names)
         self.assertIn("legal_timeline/mixed_notes.timeline.json", names)
         self.assertIn("legal_contradictions/mixed_notes.contradictions.json", names)
+        self.assertIn("legal_claims_issues/mixed_notes.claims_issues.json", names)
         self.assertIn("legal_memory/mixed_notes.legal_memory.md", names)
         self.assertEqual(manifest["threads"][0]["export_status"], "exported")
 
