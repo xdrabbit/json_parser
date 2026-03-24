@@ -41,11 +41,17 @@ LEGAL_MEDIUM_WEIGHT_PATTERNS = {
     "strategy": re.compile(r"\b(strategy|argument|position|remedy|settlement|risk|timeline|chronology|deadline|obligation|duty)\b", re.IGNORECASE),
     "context": re.compile(r"\b(schedule|money|payment|expense|damage|repair|access|communication|response)\b", re.IGNORECASE),
     "emotion_tied_to_case": re.compile(r"\b(stress|pressure|afraid|angry|panic|overwhelmed)\b", re.IGNORECASE),
+    "contradiction_context": re.compile(r"\b(contradiction|inconsisten(?:t|cy)|noncompliance|failed to comply|missed deadline)\b", re.IGNORECASE),
 }
 LEGAL_NEGATIVE_PATTERNS = {
     "software": re.compile(r"\b(code|coding|python|streamlit|debug|repo|commit|pull request|ui|json parser)\b", re.IGNORECASE),
     "creative": re.compile(r"\b(song|music|poem|story|novel|creative writing|lyrics)\b", re.IGNORECASE),
     "general_life": re.compile(r"\b(recipe|shopping|vacation|restaurant|birthday|workout|movie|game|hobby)\b", re.IGNORECASE),
+}
+CONTRADICTION_SIGNAL_PATTERNS = {
+    "direct_conflict": re.compile(r"\b(contradict|inconsistent|inconsistency|not true|false|dispute|conflict)\b", re.IGNORECASE),
+    "excuse_or_shift": re.compile(r"\b(excuse|changed story|different story|however|but now|shifted|claimed instead)\b", re.IGNORECASE),
+    "noncompliance": re.compile(r"\b(failed|refused|did not|didn't|never provided|missed deadline|noncompliance|did not comply)\b", re.IGNORECASE),
 }
 
 def syllable_count(word):
@@ -614,6 +620,46 @@ def build_legal_timeline_json(convo, messages, evidence_manifest, relevance_mani
         "events": events,
     }
 
+def build_contradiction_index_json(convo, messages, evidence_manifest, relevance_manifest):
+    """Create a contradiction/pattern index from legal-core and legal-adjacent spans."""
+    included_indices = {
+        item["message_index"]
+        for item in relevance_manifest["messages"]
+        if item["classification"] in {"legal_core", "legal_adjacent"}
+    }
+    evidence_by_message = {}
+    for exhibit in evidence_manifest["exhibits"]:
+        evidence_by_message.setdefault(exhibit["message_index"], []).append(exhibit)
+
+    items = []
+    for index, message in enumerate(messages, 1):
+        if index not in included_indices:
+            continue
+
+        signals = [
+            label for label, pattern in CONTRADICTION_SIGNAL_PATTERNS.items() if pattern.search(message["content"])
+        ]
+        if not signals:
+            continue
+
+        items.append({
+            "message_index": index,
+            "timestamp": message["timestamp"],
+            "timestamp_text": ts_to_str(message["timestamp"]),
+            "role": message["role"].lower(),
+            "signals": signals,
+            "summary": summarize_text(message["content"], 220),
+            "evidence_ids": [exhibit["exhibit_id"] for exhibit in evidence_by_message.get(index, [])],
+        })
+
+    return {
+        "conversation_title": convo.get("title", "Untitled"),
+        "thread_classification": relevance_manifest["thread_classification"],
+        "included_message_ranges": relevance_manifest["included_message_ranges"],
+        "contradiction_count": len(items),
+        "items": items,
+    }
+
 def build_batch_summary_zip(conversations, filter_mode="Original"):
     """Create a ZIP archive with deterministic thread summaries for all titled conversations."""
     buffer = io.BytesIO()
@@ -668,6 +714,7 @@ def build_batch_legal_memory_zip(conversations):
             legal_relevance_manifest = build_legal_relevance_manifest(convo, messages)
             legal_memory_markdown = build_legal_memory_markdown(convo, messages, evidence_manifest, legal_relevance_manifest)
             legal_timeline_json = build_legal_timeline_json(convo, messages, evidence_manifest, legal_relevance_manifest)
+            contradiction_index_json = build_contradiction_index_json(convo, messages, evidence_manifest, legal_relevance_manifest)
 
             archive.writestr(
                 f"legal_relevance/{file_stem}.legal_relevance.json",
@@ -677,12 +724,17 @@ def build_batch_legal_memory_zip(conversations):
                 f"legal_timeline/{file_stem}.timeline.json",
                 json.dumps(legal_timeline_json, indent=2, ensure_ascii=False),
             )
+            archive.writestr(
+                f"legal_contradictions/{file_stem}.contradictions.json",
+                json.dumps(contradiction_index_json, indent=2, ensure_ascii=False),
+            )
 
             thread_classification = legal_relevance_manifest["thread_classification"]
             export_status = "skipped_non_legal"
             exported_files = [
                 f"legal_relevance/{file_stem}.legal_relevance.json",
                 f"legal_timeline/{file_stem}.timeline.json",
+                f"legal_contradictions/{file_stem}.contradictions.json",
             ]
 
             if thread_classification in {"legal_core", "legal_adjacent", "uncertain"}:
@@ -1146,6 +1198,8 @@ def render_app():
                             legal_relevance_manifest_json = json.dumps(legal_relevance_manifest, indent=2, ensure_ascii=False)
                             legal_timeline = build_legal_timeline_json(convo, messages, evidence_manifest, legal_relevance_manifest)
                             legal_timeline_json = json.dumps(legal_timeline, indent=2, ensure_ascii=False)
+                            contradiction_index = build_contradiction_index_json(convo, messages, evidence_manifest, legal_relevance_manifest)
+                            contradiction_index_json = json.dumps(contradiction_index, indent=2, ensure_ascii=False)
                             transcript_markdown = build_markdown_transcript(convo, messages)
                             thread_summary_markdown = apply_content_filter(
                                 build_thread_summary_markdown(convo, messages, evidence_manifest),
@@ -1249,6 +1303,17 @@ def render_app():
                                 )
                             with export_col12:
                                 st.caption(f"Timeline events: {legal_timeline['event_count']}")
+                            export_col13, export_col14 = st.columns(2)
+                            with export_col13:
+                                st.download_button(
+                                    label="Download contradiction index JSON",
+                                    data=contradiction_index_json,
+                                    file_name=f"{file_stem}.contradictions.json",
+                                    mime="application/json",
+                                    key=f"download_contradictions_{file_stem}"
+                                )
+                            with export_col14:
+                                st.caption(f"Contradiction items: {contradiction_index['contradiction_count']}")
                             summary_col1, summary_col2 = st.columns(2)
                             with summary_col1:
                                 st.caption(f"Extracted exhibits: {evidence_manifest['evidence_count']}")
@@ -1273,6 +1338,9 @@ def render_app():
 
                             with st.expander("Preview legal timeline JSON", expanded=False):
                                 st.code(legal_timeline_json, language="json")
+
+                            with st.expander("Preview contradiction index JSON", expanded=False):
+                                st.code(contradiction_index_json, language="json")
 
                             st.subheader("Summary Comparison")
                             comparison_col1, comparison_col2 = st.columns(2)

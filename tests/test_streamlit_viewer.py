@@ -133,6 +133,38 @@ def build_uncertain_conversation():
     }
 
 
+def build_contradiction_conversation():
+    return {
+        "title": "contradiction thread",
+        "create_time": 1700004000,
+        "update_time": 1700004400,
+        "mapping": {
+            "root": {"message": None},
+            "m1": {
+                "message": {
+                    "create_time": 1700004100,
+                    "author": {"role": "user"},
+                    "content": {"parts": ["The court order required a response by January 5, 2025."]},
+                }
+            },
+            "m2": {
+                "message": {
+                    "create_time": 1700004200,
+                    "author": {"role": "user"},
+                    "content": {"parts": ["They failed to comply and then gave a different story about why the document was never provided."]},
+                }
+            },
+            "m3": {
+                "message": {
+                    "create_time": 1700004300,
+                    "author": {"role": "assistant"},
+                    "content": {"parts": ["That inconsistency supports a contradiction pattern tied to noncompliance."]},
+                }
+            },
+        },
+    }
+
+
 class StreamlitViewerTests(unittest.TestCase):
     def test_extract_content_text_rewrites_image_links_and_attachments(self):
         content = {
@@ -302,6 +334,17 @@ class StreamlitViewerTests(unittest.TestCase):
         self.assertEqual(timeline["events"][0]["message_index"], 2)
         self.assertIn(timeline["events"][0]["event_type"], {"dated_event", "obligation_or_dispute"})
 
+    def test_build_contradiction_index_json_detects_signals(self):
+        conversation = build_contradiction_conversation()
+        messages = viewer.extract_messages_from_conversation(conversation)
+        evidence_manifest = viewer.build_evidence_manifest(conversation, messages)
+        relevance_manifest = viewer.build_legal_relevance_manifest(conversation, messages)
+
+        contradictions = viewer.build_contradiction_index_json(conversation, messages, evidence_manifest, relevance_manifest)
+
+        self.assertGreaterEqual(contradictions["contradiction_count"], 1)
+        self.assertIn("noncompliance", contradictions["items"][0]["signals"])
+
     def test_build_batch_legal_memory_zip_exports_artifacts_for_legal_threads(self):
         conversation = build_mixed_conversation()
 
@@ -313,6 +356,7 @@ class StreamlitViewerTests(unittest.TestCase):
 
         self.assertIn("legal_relevance/mixed_notes.legal_relevance.json", names)
         self.assertIn("legal_timeline/mixed_notes.timeline.json", names)
+        self.assertIn("legal_contradictions/mixed_notes.contradictions.json", names)
         self.assertIn("legal_memory/mixed_notes.legal_memory.md", names)
         self.assertEqual(manifest["threads"][0]["export_status"], "exported")
 
